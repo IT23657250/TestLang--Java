@@ -1,0 +1,136 @@
+/* CUP parser for TestLang++ */
+package tl.parser;
+
+import java.util.*;
+import tl.ast.Ast;
+import tl.ast.Ast.*;
+import static tl.parser.Util.*;
+
+parser code {:
+  public void syntax_error(java_cup.runtime.Symbol cur_token) {
+    report("Syntax error", cur_token);
+  }
+  public void unrecovered_syntax_error(java_cup.runtime.Symbol cur_token) throws java.lang.Exception {
+    report("Unrecovered syntax error", cur_token);
+  }
+  private void report(String kind, java_cup.runtime.Symbol tok) {
+    String lex = (tok != null && tok.value != null) ? (" near " + tok.value) : "";
+    throw new RuntimeException(kind + " at line " + (tok.left) + ", column " + (tok.right) + lex);
+  }
+:};
+
+terminal CONFIG, BASE_URL, HEADER, LET, TEST, GET, POST, PUT, DELETE, EXPECT, STATUS, BODY, CONTAINS;
+terminal LBRACE, RBRACE, EQ, SEMI;
+terminal Integer NUMBER;
+terminal String IDENT, STRING;
+
+non terminal Ast.Program program;
+non terminal Ast.Config opt_config;
+non terminal List<Ast.Let> let_list;
+non terminal List<Ast.Test> test_list;
+non terminal Ast.Test test;
+non terminal List<Ast.Step> step_list;
+non terminal Ast.Step step;
+non terminal Ast.Step.Request request;
+non terminal Ast.Step.Expect expect;
+non terminal LinkedHashMap<String,String> req_headers;
+non terminal String opt_body;
+non terminal LinkedHashMap<String,String> cfg_headers;
+non terminal String opt_base;
+
+precedence left CONTAINS;
+
+start with program;
+
+program ::= opt_config let_list test_list
+           {: RESULT = new Ast.Program($1, $2, $3); :}
+          ;
+
+opt_config ::= /* empty */
+             {: RESULT = null; :}
+             | CONFIG LBRACE opt_base cfg_headers RBRACE
+             {: RESULT = new Ast.Config($3, $4); :}
+             ;
+
+opt_base ::= /* empty */
+           {: RESULT = null; :}
+           | BASE_URL EQ STRING SEMI
+           {: RESULT = $3; :}
+           ;
+
+cfg_headers ::= /* empty */
+              {: RESULT = new LinkedHashMap<>(); :}
+              | cfg_headers HEADER STRING EQ STRING SEMI
+              {: $1.put($3, $5); RESULT = $1; :}
+              ;
+
+let_list ::= /* empty */
+           {: RESULT = new ArrayList<>(); :}
+           | let_list LET IDENT EQ STRING SEMI
+           {: $1.add(new Ast.Let($3, Ast.Value.str($5))); RESULT = $1; :}
+           | let_list LET IDENT EQ NUMBER SEMI
+           {: $1.add(new Ast.Let($3, Ast.Value.num($5))); RESULT = $1; :}
+           ;
+
+test_list ::= test
+           {: List<Ast.Test> l = new ArrayList<>(); l.add($1); RESULT = l; :}
+           | test_list test
+           {: $1.add($2); RESULT = $1; :}
+           ;
+
+test ::= TEST IDENT LBRACE step_list RBRACE
+       {: RESULT = new Ast.Test($2, $4); :}
+       ;
+
+step_list ::= /* empty */
+            {: RESULT = new ArrayList<>(); :}
+            | step_list step
+            {: $1.add($2); RESULT = $1; :}
+            ;
+
+step ::= request SEMI
+       {: RESULT = $1; :}
+       | request LBRACE req_headers opt_body RBRACE SEMI
+       {: // validate no body for GET/DELETE
+          if (($1.method == Method.GET || $1.method == Method.DELETE) && $4 != null) {
+            throw new RuntimeException("Line " + ((java_cup.runtime.Symbol) CUP$Parser$actions.getToken$RBRACE()).left + ": GET/DELETE cannot have a body");
+          }
+          LinkedHashMap<String,String> merged = $1.headers;
+          merged.putAll($3);
+          RESULT = new Ast.Step.Request($1.method, $1.path, merged, $4);
+        :}
+       | expect SEMI
+       {: RESULT = $1; :}
+       ;
+
+request ::= GET STRING
+          {: RESULT = new Ast.Step.Request(Method.GET, $2, new LinkedHashMap<>(), null); :}
+          | DELETE STRING
+          {: RESULT = new Ast.Step.Request(Method.DELETE, $2, new LinkedHashMap<>(), null); :}
+          | POST STRING
+          {: RESULT = new Ast.Step.Request(Method.POST, $2, new LinkedHashMap<>(), null); :}
+          | PUT STRING
+          {: RESULT = new Ast.Step.Request(Method.PUT, $2, new LinkedHashMap<>(), null); :}
+          ;
+
+req_headers ::= /* empty */
+              {: RESULT = new LinkedHashMap<>(); :}
+              | req_headers HEADER STRING EQ STRING SEMI
+              {: $1.put($3, $5); RESULT = $1; :}
+              ;
+
+opt_body ::= /* empty */
+           {: RESULT = null; :}
+           | BODY EQ STRING SEMI
+           {: RESULT = $3; :}
+           ;
+
+expect ::= EXPECT STATUS EQ NUMBER
+         {: RESULT = new Ast.Step.Expect.StatusEq($4); :}
+         | EXPECT HEADER STRING EQ STRING
+         {: RESULT = new Ast.Step.Expect.HeaderEq($3, $5); :}
+         | EXPECT HEADER STRING CONTAINS STRING
+         {: RESULT = new Ast.Step.Expect.HeaderContains($3, $5); :}
+         | EXPECT BODY CONTAINS STRING
+         {: RESULT = new Ast.Step.Expect.BodyContains($4); :}
+         ;
